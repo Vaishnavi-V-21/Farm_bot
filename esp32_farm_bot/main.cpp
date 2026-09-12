@@ -30,8 +30,8 @@ float readSoilEC();
 int readRS485Sensor(const byte *cmd, int cmdLen, byte *responseBuffer);
 
 // ── WiFi Configuration ───────────────────────────────────────────────────────────────
-const char *WIFI_SSID = "V reddy";       // ← Replace with your WiFi name
-const char *WIFI_PASSWORD = "Rohan@127"; // ← Replace with your WiFi password
+const char *WIFI_SSID = "VREDDY";       // ← Replace with your WiFi name
+const char *WIFI_PASSWORD = "VPMVR@05"; // ← Replace with your WiFi password
 
 // ── PC Server URL (replace with your PC's local IP address) ─────────────────────────
 const char *SERVER_URL = "http://192.168.1.8:5000/api/telemetry"; // ← Update IP!
