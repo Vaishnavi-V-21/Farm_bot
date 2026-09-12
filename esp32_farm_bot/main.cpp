@@ -1,32 +1,12 @@
 /*
   =====================================================================================
-  Project Title : Farm Bot: IoT Sensor Node Firmware
-  File          : esp32_farm_bot.ino
+  Project Title : Farm Bot: IoT Sensor Node Firmware (PlatformIO / C++)
+  File          : main.cpp
   Board         : ESP32 (30-pin or 38-pin DevKit)
   Description   : Reads DHT22 (Temp/Humidity), Soil Moisture (Analog), and
-  simulates NPK/pH/EC from RS485 or analog sensors. Sends JSON telemetry to the
+                  simulates NPK/pH/EC from RS485 or analog sensors. Sends JSON telemetry to the
                   Farm Bot PC dashboard via HTTP POST over WiFi. Controls water
-  pump relay based on commands from the server.
-
-  SENSOR WIRING:
-  ┌────────────────────────────────────────────────────────────┐
-  │  Sensor             │  ESP32 Pin  │  Notes                 │
-  ├─────────────────────┼─────────────┼────────────────────────┤
-  │  DHT22 DATA         │  GPIO 4     │  10kΩ pull-up to 3.3V  │
-  │  Soil Moisture      │  GPIO 34    │  Analog input (ADC1)   │
-  │  RS485 NPK/pH RX    │  GPIO 16    │  UART2 RX              │
-  │  RS485 NPK/pH TX    │  GPIO 17    │  UART2 TX              │
-  │  RS485 DE/RE Enable │  GPIO 5     │  Direction control     │
-  │  Pump Relay IN      │  GPIO 26    │  HIGH=ON, LOW=OFF      │
-  │  Status LED (opt)   │  GPIO 2     │  Onboard LED           │
-  └─────────────────────┴─────────────┴────────────────────────┘
-
-  LIBRARIES REQUIRED (Arduino IDE):
-    - DHT sensor library by Adafruit
-    - ArduinoJson by Benoit Blanchon
-    - WiFi (built-in ESP32)
-    - HTTPClient (built-in ESP32)
-
+                  pump relay based on commands from the server.
   =====================================================================================
 */
 
@@ -49,20 +29,15 @@ float readSoilPH();
 float readSoilEC();
 int readRS485Sensor(const byte *cmd, int cmdLen, byte *responseBuffer);
 
-// ── WiFi Configuration
-// ───────────────────────────────────────────────────────────────
+// ── WiFi Configuration ───────────────────────────────────────────────────────────────
 const char *WIFI_SSID = "V reddy";       // ← Replace with your WiFi name
 const char *WIFI_PASSWORD = "Rohan@127"; // ← Replace with your WiFi password
 
-// ── PC Server URL (replace with your PC's local IP address)
-// ───────────────────────── Find your PC IP: run `ipconfig` in Command Prompt,
-// look for IPv4 Address
-const char *SERVER_URL =
-    "http://192.168.1.8:5000/api/telemetry"; // ← Update IP!
+// ── PC Server URL (replace with your PC's local IP address) ─────────────────────────
+const char *SERVER_URL = "http://192.168.1.8:5000/api/telemetry"; // ← Update IP!
 
-// ── Pin Definitions
-// ──────────────────────────────────────────────────────────────────
-#define DHT_PIN 4 // DHT22 Data Pin
+// ── Pin Definitions ──────────────────────────────────────────────────────────────────
+#define DHT_PIN 4            // DHT22 Data Pin
 #define DHT_TYPE DHT22
 #define SOIL_MOISTURE_PIN 34 // Analog Soil Moisture Sensor (ADC1_CH6)
 #define RS485_RX_PIN 16      // UART2 RX (NPK/pH/EC sensor)
@@ -71,26 +46,20 @@ const char *SERVER_URL =
 #define PUMP_RELAY_PIN 26    // Water Pump Relay
 #define STATUS_LED_PIN 2     // Onboard LED for status indicator
 
-// ── Timing Configuration
-// ─────────────────────────────────────────────────────────────
+// ── Timing Configuration ─────────────────────────────────────────────────────────────
 #define TELEMETRY_INTERVAL_MS 5000 // Send data every 5 seconds
 #define RETRY_DELAY_MS 3000        // Retry WiFi connect every 3 seconds
 
-// ── Soil Moisture Calibration
-// ──────────────────────────────────────────────────────── Calibrate these
-// values by testing your sensor in dry air vs. submerged in water
+// ── Soil Moisture Calibration ────────────────────────────────────────────────────────
 #define MOISTURE_AIR_VALUE 3800   // ADC reading in completely dry air
 #define MOISTURE_WATER_VALUE 1200 // ADC reading in water
 
-// ── NPK RS485 Modbus Commands
-// ──────────────────────────────────────────────────────── Standard command for
-// Chinese RS485 NPK sensor (Model: JXBS-3001-NPK)
+// ── NPK RS485 Modbus Commands ────────────────────────────────────────────────────────
 static const byte NPK_CMD[] = {0x01, 0x03, 0x00, 0x1E, 0x00, 0x03, 0x65, 0xCD};
-static const byte PH_CMD[] = {0x01, 0x03, 0x00, 0x06, 0x00, 0x01, 0x64, 0x0B};
-static const byte EC_CMD[] = {0x01, 0x03, 0x00, 0x15, 0x00, 0x01, 0x95, 0xCE};
+static const byte PH_CMD[]  = {0x01, 0x03, 0x00, 0x06, 0x00, 0x01, 0x64, 0x0B};
+static const byte EC_CMD[]  = {0x01, 0x03, 0x00, 0x15, 0x00, 0x01, 0x95, 0xCE};
 
-// ── Global Objects
-// ───────────────────────────────────────────────────────────────────
+// ── Global Objects ───────────────────────────────────────────────────────────────────
 DHT dht(DHT_PIN, DHT_TYPE);
 HardwareSerial RS485Serial(2); // UART2 for RS485 sensor
 
@@ -113,7 +82,7 @@ void setup() {
   // Initial states
   digitalWrite(PUMP_RELAY_PIN, LOW); // Pump OFF at boot
   digitalWrite(STATUS_LED_PIN, LOW);
-  digitalWrite(RS485_DE_PIN, LOW); // RS485 in receive mode
+  digitalWrite(RS485_DE_PIN, LOW);  // RS485 in receive mode
 
   // Initialize DHT22
   dht.begin();
@@ -140,14 +109,14 @@ void loop() {
     lastTelemetrySendTime = now;
 
     // Read all sensors
-    float temperature = readTemperature();
-    float humidity = readHumidity();
+    float temperature  = readTemperature();
+    float humidity     = readHumidity();
     float soilMoisture = readSoilMoisturePct();
-    int nitrogen = readNPK_N();
-    int phosphorus = readNPK_P();
-    int potassium = readNPK_K();
-    float soilPH = readSoilPH();
-    float soilEC = readSoilEC();
+    int nitrogen       = readNPK_N();
+    int phosphorus     = readNPK_P();
+    int potassium      = readNPK_K();
+    float soilPH       = readSoilPH();
+    float soilEC       = readSoilEC();
 
     // Log readings to Serial Monitor
     Serial.println("\n────────────────── SENSOR READINGS ──────────────────");
@@ -168,8 +137,7 @@ void loop() {
   }
 }
 
-// ── WiFi Connection
-// ──────────────────────────────────────────────────────────────────
+// ── WiFi Connection ──────────────────────────────────────────────────────────────────
 void connectToWiFi() {
   Serial.printf("\n[WiFi]: Connecting to '%s'", WIFI_SSID);
   WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
@@ -179,24 +147,20 @@ void connectToWiFi() {
     delay(RETRY_DELAY_MS / 10);
     Serial.print(".");
     attempts++;
-    digitalWrite(STATUS_LED_PIN,
-                 !digitalRead(STATUS_LED_PIN)); // Blink while connecting
+    digitalWrite(STATUS_LED_PIN, !digitalRead(STATUS_LED_PIN)); // Blink while connecting
   }
 
   if (WiFi.status() == WL_CONNECTED) {
     digitalWrite(STATUS_LED_PIN, HIGH); // Solid ON = Connected
     Serial.println("\n[WiFi]: ✅ Connected!");
-    Serial.printf("[WiFi]: ESP32 IP Address: %s\n",
-                  WiFi.localIP().toString().c_str());
+    Serial.printf("[WiFi]: ESP32 IP Address: %s\n", WiFi.localIP().toString().c_str());
   } else {
     digitalWrite(STATUS_LED_PIN, LOW);
-    Serial.println(
-        "\n[WiFi]: ❌ Failed to connect. Will retry on next loop...");
+    Serial.println("\n[WiFi]: ❌ Failed to connect. Will retry on next loop...");
   }
 }
 
-// ── Send Telemetry to PC Server via HTTP POST
-// ────────────────────────────────────────
+// ── Send Telemetry to PC Server via HTTP POST ────────────────────────────────────────
 void sendTelemetryToServer(float temp, float hum, float moisture, int n, int p,
                            int k, float ph, float ec) {
   if (WiFi.status() != WL_CONNECTED)
@@ -208,15 +172,15 @@ void sendTelemetryToServer(float temp, float hum, float moisture, int n, int p,
 
   // Build JSON payload
   StaticJsonDocument<300> doc;
-  doc["temp"] = temp;
-  doc["hum"] = hum;
+  doc["temp"]     = temp;
+  doc["hum"]      = hum;
   doc["moisture"] = moisture;
-  doc["N"] = n;
-  doc["P"] = p;
-  doc["K"] = k;
-  doc["ph"] = ph;
-  doc["ec"] = ec;
-  doc["pump"] = pumpState ? 1 : 0;
+  doc["N"]        = n;
+  doc["P"]        = p;
+  doc["K"]        = k;
+  doc["ph"]       = ph;
+  doc["ec"]       = ec;
+  doc["pump"]     = pumpState ? 1 : 0;
 
   String jsonPayload;
   serializeJson(doc, jsonPayload);
@@ -237,33 +201,28 @@ void sendTelemetryToServer(float temp, float hum, float moisture, int n, int p,
           pumpState = cmdPump;
           digitalWrite(PUMP_RELAY_PIN, pumpState ? HIGH : LOW);
           Serial.printf("[RELAY]: Pump set to %s by server command.\n",
-                        pumpState ? "ON 🌊" : "OFF 🛑");
+                        pumpState ? "ON OCEAN" : "OFF STOP");
         }
       }
     }
   } else {
-    Serial.printf(
-        "[HTTP]: ❌ Error %d — Server unreachable. Check IP & firewall.\n",
-        httpCode);
+    Serial.printf("[HTTP]: ❌ Error %d — Server unreachable. Check IP & firewall.\n", httpCode);
   }
 
   http.end();
 }
 
-// ── DHT22 — Temperature
-// ──────────────────────────────────────────────────────────────
+// ── DHT22 — Temperature ──────────────────────────────────────────────────────────────
 float readTemperature() {
   float t = dht.readTemperature();
   if (isnan(t)) {
-    Serial.println(
-        "[DHT22]: ⚠️  Temperature read failed. Using last known value.");
+    Serial.println("[DHT22]: ⚠️  Temperature read failed. Using last known value.");
     return 26.0; // Fallback default
   }
   return t;
 }
 
-// ── DHT22 — Humidity
-// ─────────────────────────────────────────────────────────────────
+// ── DHT22 — Humidity ─────────────────────────────────────────────────────────────────
 float readHumidity() {
   float h = dht.readHumidity();
   if (isnan(h)) {
@@ -273,8 +232,7 @@ float readHumidity() {
   return h;
 }
 
-// ── Capacitive Soil Moisture Sensor (Analog)
-// ─────────────────────────────────────────
+// ── Capacitive Soil Moisture Sensor (Analog) ─────────────────────────────────────────
 float readSoilMoisturePct() {
   int rawValue = analogRead(SOIL_MOISTURE_PIN);
   // Map ADC reading to percentage: dry=0%, wet=100%
@@ -283,8 +241,7 @@ float readSoilMoisturePct() {
   return round(pct * 10.0) / 10.0; // 1 decimal place
 }
 
-// ── RS485 NPK Sensor — Nitrogen
-// ──────────────────────────────────────────────────────
+// ── RS485 NPK Sensor — Nitrogen ──────────────────────────────────────────────────────
 int readNPK_N() {
   byte response[11];
   int val = readRS485Sensor(NPK_CMD, sizeof(NPK_CMD), response);
@@ -293,8 +250,7 @@ int readNPK_N() {
   return 50;                                 // Fallback if sensor unavailable
 }
 
-// ── RS485 NPK Sensor — Phosphorus
-// ───────────────────────────────────────────────────
+// ── RS485 NPK Sensor — Phosphorus ───────────────────────────────────────────────────
 int readNPK_P() {
   byte response[11];
   int val = readRS485Sensor(NPK_CMD, sizeof(NPK_CMD), response);
@@ -303,8 +259,7 @@ int readNPK_P() {
   return 30; // Fallback
 }
 
-// ── RS485 NPK Sensor — Potassium
-// ─────────────────────────────────────────────────────
+// ── RS485 NPK Sensor — Potassium ─────────────────────────────────────────────────────
 int readNPK_K() {
   byte response[11];
   int val = readRS485Sensor(NPK_CMD, sizeof(NPK_CMD), response);
@@ -313,8 +268,7 @@ int readNPK_K() {
   return 120; // Fallback
 }
 
-// ── RS485 pH Sensor
-// ───────────────────────────────────────────────────────────────────
+// ── RS485 pH Sensor ───────────────────────────────────────────────────────────────────
 float readSoilPH() {
   byte response[7];
   int val = readRS485Sensor(PH_CMD, sizeof(PH_CMD), response);
@@ -325,8 +279,7 @@ float readSoilPH() {
   return 6.5; // Fallback
 }
 
-// ── RS485 EC Sensor
-// ───────────────────────────────────────────────────────────────────
+// ── RS485 EC Sensor ───────────────────────────────────────────────────────────────────
 float readSoilEC() {
   byte response[7];
   int val = readRS485Sensor(EC_CMD, sizeof(EC_CMD), response);
@@ -337,8 +290,7 @@ float readSoilEC() {
   return 1.25; // Fallback
 }
 
-// ── Generic RS485 Read Helper
-// ─────────────────────────────────────────────────────────
+// ── Generic RS485 Read Helper ─────────────────────────────────────────────────────────
 int readRS485Sensor(const byte *cmd, int cmdLen, byte *responseBuffer) {
   // Set RS485 to transmit mode
   digitalWrite(RS485_DE_PIN, HIGH);
