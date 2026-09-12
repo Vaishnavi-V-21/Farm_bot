@@ -1,3 +1,7 @@
+# ── PlatformIO Build Files ────────────────────────────────────
+.pio/
+.vscode/.platformio/
+
 # ── Python cache ──────────────────────────────────────────────
 __pycache__/
 *.py[cod]
