@@ -98,6 +98,10 @@ HardwareSerial RS485Serial(2); // UART2 for RS485 sensor
 unsigned long lastTelemetrySendTime = 0;
 bool pumpState = false;
 
+// Mode Configuration: Set to true to output ONE TIME ONLY, or false for continuous output every 5 sec
+bool sendOnceOnly = true;
+bool hasSent = false;
+
 // ────────────────────────────────────────────────────────────────────────────────────
 void setup() {
   Serial.begin(115200);
@@ -130,6 +134,11 @@ void setup() {
 
 // ────────────────────────────────────────────────────────────────────────────────────
 void loop() {
+  if (sendOnceOnly && hasSent) {
+    delay(1000);
+    return; // Single-read mode: Stop repeating continuous output
+  }
+
   // Reconnect WiFi if disconnected
   if (WiFi.status() != WL_CONNECTED) {
     Serial.println("[WiFi]: Connection lost! Reconnecting...");
@@ -137,8 +146,9 @@ void loop() {
   }
 
   unsigned long now = millis();
-  if (now - lastTelemetrySendTime >= TELEMETRY_INTERVAL_MS) {
+  if (now - lastTelemetrySendTime >= TELEMETRY_INTERVAL_MS || !hasSent) {
     lastTelemetrySendTime = now;
+    hasSent = true;
 
     // Read all sensors
     float temperature = readTemperature();
