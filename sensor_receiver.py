@@ -11,8 +11,19 @@ Port          : 5000 (must match ESP32 SERVER_URL)
 =====================================================================================
 """
 
+import os
+import sys
+
+ROOT_DIR = os.path.dirname(os.path.abspath(__file__))
+if ROOT_DIR not in sys.path:
+    sys.path.insert(0, ROOT_DIR)
+
 from flask import Flask, request, jsonify
-from src.db_manager import FarmBotDatabase
+
+try:
+    from src.db_manager import FarmBotDatabase
+except ModuleNotFoundError:
+    from db_manager import FarmBotDatabase
 
 app = Flask(__name__)
 db  = FarmBotDatabase()

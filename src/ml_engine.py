@@ -9,9 +9,18 @@ Description   : Machine Learning inference engine for crop recommendation,
 """
 
 import os
+import sys
 import pickle
 import numpy as np
-from src.dataset_generator import CROP_DATASETS, train_and_save_model
+
+ROOT_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+if ROOT_DIR not in sys.path:
+    sys.path.insert(0, ROOT_DIR)
+
+try:
+    from src.dataset_generator import CROP_DATASETS, train_and_save_model
+except ModuleNotFoundError:
+    from dataset_generator import CROP_DATASETS, train_and_save_model
 
 MODEL_PATH = os.path.join(os.path.dirname(__file__), '../models/crop_recommendation_rf.pkl')
 

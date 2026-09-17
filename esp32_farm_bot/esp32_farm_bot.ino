@@ -59,7 +59,7 @@ const char *WIFI_PASSWORD = "Rohan@127"; // ← Replace with your WiFi password
 // ───────────────────────── Find your PC IP: run `ipconfig` in Command Prompt,
 // look for IPv4 Address
 const char *SERVER_URL =
-    "http://192.168.1.8:5000/api/telemetry"; // ← Update IP!
+    "http://192.168.8.1:5000/api/telemetry"; // ← Update IP!
 
 // ── Pin Definitions
 // ──────────────────────────────────────────────────────────────────

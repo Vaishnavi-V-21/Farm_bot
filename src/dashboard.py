@@ -9,15 +9,33 @@ Run Command   : streamlit run src/dashboard.py
 =====================================================================================
 """
 
+import sys
+import os
+
+# Ensure project root directory is on sys.path regardless of execution context
+ROOT_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+if ROOT_DIR not in sys.path:
+    sys.path.insert(0, ROOT_DIR)
+
 import streamlit as st
 import pandas as pd
 import numpy as np
 import time
-from src.ml_engine import CropRecommendationEngine
-from src.fertilizer_engine import FertilizerAndTargetCropEngine
-from src.db_manager import FarmBotDatabase
+
 try:
-    from src.voice_assistant import MultilingualVoiceAssistant
+    from src.ml_engine import CropRecommendationEngine
+    from src.fertilizer_engine import FertilizerAndTargetCropEngine
+    from src.db_manager import FarmBotDatabase
+except ModuleNotFoundError:
+    from ml_engine import CropRecommendationEngine
+    from fertilizer_engine import FertilizerAndTargetCropEngine
+    from db_manager import FarmBotDatabase
+
+try:
+    try:
+        from src.voice_assistant import MultilingualVoiceAssistant
+    except ModuleNotFoundError:
+        from voice_assistant import MultilingualVoiceAssistant
     VOICE_AVAILABLE = True
 except Exception:
     VOICE_AVAILABLE = False

@@ -8,7 +8,17 @@ Description   : Fertility improvement engine, Target Crop Goal Mode analyzer,
 =====================================================================================
 """
 
-from src.dataset_generator import CROP_DATASETS
+import os
+import sys
+
+ROOT_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+if ROOT_DIR not in sys.path:
+    sys.path.insert(0, ROOT_DIR)
+
+try:
+    from src.dataset_generator import CROP_DATASETS
+except ModuleNotFoundError:
+    from dataset_generator import CROP_DATASETS
 
 # Commercial Fertilizer Factors
 UREA_N_CONVERSION = 100.0 / 46.0   # 46% Nitrogen
