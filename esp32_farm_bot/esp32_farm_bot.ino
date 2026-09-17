@@ -38,7 +38,8 @@
 
 // Forward function declarations for C++ / PlatformIO IntelliSense
 void connectToWiFi();
-void sendTelemetryToServer(float temp, float hum, float moisture, int n, int p, int k, float ph, float ec);
+void sendTelemetryToServer(float temp, float hum, float moisture, int n, int p,
+                           int k, float ph, float ec);
 float readTemperature();
 float readHumidity();
 float readSoilMoisturePct();
