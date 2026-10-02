@@ -21,7 +21,8 @@ def check_and_install_dependencies():
         'numpy': 'numpy',
         'pygame': 'pygame',
         'gtts': 'gTTS',
-        'speech_recognition': 'SpeechRecognition'
+        'speech_recognition': 'SpeechRecognition',
+        'serial': 'pyserial'
     }
 
     missing = []
@@ -36,6 +37,21 @@ def check_and_install_dependencies():
         req_file = os.path.join(os.path.dirname(__file__), 'requirements.txt')
         subprocess.check_call([sys.executable, '-m', 'pip', 'install', '-r', req_file])
         print("✅ All dependencies installed successfully.\n")
+
+def start_background_receiver():
+    """Starts the Flask sensor receiver in a background daemon thread for WiFi telemetry."""
+    try:
+        import threading
+        from sensor_receiver import app
+        # Disable Flask banner logs for cleaner output
+        import logging
+        log = logging.getLogger('werkzeug')
+        log.setLevel(logging.ERROR)
+        t = threading.Thread(target=lambda: app.run(host='0.0.0.0', port=5000, debug=False, use_reloader=False), daemon=True)
+        t.start()
+        print("✅ WiFi IoT Sensor Receiver running in background on port 5000.")
+    except Exception as e:
+        print(f"ℹ️ WiFi Receiver note: {e}")
 
 def main():
     print("=" * 65)
@@ -60,6 +76,9 @@ def main():
     from src.db_manager import FarmBotDatabase
     db = FarmBotDatabase()
     print("✅ Database initialized successfully.")
+
+    # Start WiFi receiver
+    start_background_receiver()
 
     # 3. Launch Dashboard
     print("\n[Step 3/3] Launching Farm Bot Dashboard on Streamlit...")

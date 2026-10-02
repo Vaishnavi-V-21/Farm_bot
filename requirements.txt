@@ -6,3 +6,5 @@ pygame>=2.5.0
 gTTS>=2.4.0
 SpeechRecognition>=3.10.0
 flask>=3.0.0
+pyserial>=3.5.0
+

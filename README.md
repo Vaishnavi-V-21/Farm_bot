@@ -52,17 +52,19 @@ python run.py
 | RS485 DE/RE | GPIO 5 | Direction control |
 | Pump Relay IN | GPIO 26 | HIGH = ON |
 
-### Flash Steps
-1. Open `esp32_farm_bot/esp32_farm_bot.ino` in **Arduino IDE 2.x**
-2. Set your WiFi SSID/password and your **PC's local IP** in the config block
-3. Board: `Tools → Board → ESP32 Dev Module`
-4. Click **Upload**
+### Connection Methods
 
-### Run the Receiver API (on PC)
-```bash
-python sensor_receiver.py
-```
-> Listens on port `5000` for ESP32 JSON payloads and logs them to `data/farm_bot.db`
+#### 🔌 Method 1: Direct USB Cable (Plug & Play — Recommended)
+1. Plug your ESP32 into your laptop via USB.
+2. Launch the dashboard (`python run.py`).
+3. The dashboard **auto-detects** your USB COM port, reads live sensor streams, and switches to `🟢 Live Hardware Connected (USB Serial)`.
+4. If you unplug the USB cable, it instantly falls back to `⚪ Hardware Disconnected (Using Manual Input)`.
+
+#### 📶 Method 2: WiFi IoT Connection
+1. Set your WiFi credentials in `esp32_farm_bot/esp32_farm_bot.ino`.
+2. Set `SERVER_URL` to `http://<YOUR_PC_IP>:5000/api/telemetry`.
+3. When you run `python run.py`, the WiFi receiver starts automatically in the background on port `5000`.
+4. Telemetry sent over WiFi is logged and displayed live on the dashboard.
 
 ---
 

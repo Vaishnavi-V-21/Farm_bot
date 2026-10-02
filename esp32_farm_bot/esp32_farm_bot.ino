@@ -52,8 +52,8 @@ int readRS485Sensor(const byte *cmd, int cmdLen, byte *responseBuffer);
 
 // ── WiFi Configuration
 // ───────────────────────────────────────────────────────────────
-const char *WIFI_SSID = "VREDDY";       // ← Replace with your WiFi name
-const char *WIFI_PASSWORD = "VPMVR@05"; // ← Replace with your WiFi password
+const char *WIFI_SSID = "V reddy";       // ← Replace with your WiFi name
+const char *WIFI_PASSWORD = "Rohan@127"; // ← Replace with your WiFi password
 
 // ── PC Server URL (replace with your PC's local IP address)
 // ───────────────────────── Find your PC IP: run `ipconfig` in Command Prompt,
@@ -98,8 +98,9 @@ HardwareSerial RS485Serial(2); // UART2 for RS485 sensor
 unsigned long lastTelemetrySendTime = 0;
 bool pumpState = false;
 
-// Mode Configuration: Set to true to output ONE TIME ONLY, or false for continuous output every 5 sec
-bool sendOnceOnly = true;
+// Mode Configuration: Set to false for continuous live updates every 5 sec,
+// or true to output ONE TIME ONLY
+bool sendOnceOnly = false;
 bool hasSent = false;
 
 // ────────────────────────────────────────────────────────────────────────────────────
@@ -160,7 +161,7 @@ void loop() {
     float soilPH = readSoilPH();
     float soilEC = readSoilEC();
 
-    // Log readings to Serial Monitor
+    // Log readings to Serial Monitor (Human-readable)
     Serial.println("\n────────────────── SENSOR READINGS ──────────────────");
     Serial.printf(" Temperature   : %.1f °C\n", temperature);
     Serial.printf(" Humidity      : %.1f %%\n", humidity);
@@ -173,7 +174,12 @@ void loop() {
     Serial.printf(" Pump Status   : %s\n", pumpState ? "ON" : "OFF");
     Serial.println("──────────────────────────────────────────────────────");
 
-    // Send to PC Dashboard
+    // Output JSON string on Serial for direct USB software integration
+    Serial.printf("{\"temp\":%.1f,\"hum\":%.1f,\"moisture\":%.1f,\"N\":%d,\"P\":%d,\"K\":%d,\"ph\":%.2f,\"ec\":%.2f,\"pump\":%d}\n",
+                  temperature, humidity, soilMoisture, nitrogen,
+                  phosphorus, potassium, soilPH, soilEC, pumpState ? 1 : 0);
+
+    // Send to PC Dashboard over WiFi
     sendTelemetryToServer(temperature, humidity, soilMoisture, nitrogen,
                           phosphorus, potassium, soilPH, soilEC);
   }
