@@ -31,9 +31,13 @@ class FertilizerAndTargetCropEngine:
 
     def calculate_fertilizer_dosages(self, current_n, current_p, current_k, target_n, target_p, target_k):
         """Calculates commercial chemical fertilizer dosages in kg/acre."""
-        def_n = max(0.0, float(target_n - current_n))
-        def_p = max(0.0, float(target_p - current_p))
-        def_k = max(0.0, float(target_k - current_k))
+        cn = float(current_n) if current_n is not None else float(target_n) * 0.5
+        cp = float(current_p) if current_p is not None else float(target_p) * 0.5
+        ck = float(current_k) if current_k is not None else float(target_k) * 0.5
+
+        def_n = max(0.0, float(target_n - cn))
+        def_p = max(0.0, float(target_p - cp))
+        def_k = max(0.0, float(target_k - ck))
 
         urea_kg = round(def_n * UREA_N_CONVERSION, 2)
         ssp_kg  = round(def_p * SSP_P_CONVERSION, 2)

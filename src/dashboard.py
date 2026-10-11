@@ -1,6 +1,10 @@
-
 import sys
 import os
+import warnings
+
+# Suppress terminal warnings and extraneous library logs
+warnings.filterwarnings('ignore')
+os.environ['PYGAME_HIDE_SUPPORT_PROMPT'] = "hide"
 
 # Ensure project root directory is on sys.path regardless of execution context
 ROOT_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
@@ -39,7 +43,7 @@ st.set_page_config(
     layout="wide"
 )
 
-# Initialize Engines
+# Initialize Engines & Managers
 ml_engine = CropRecommendationEngine()
 fert_engine = FertilizerAndTargetCropEngine()
 db = FarmBotDatabase()
@@ -47,20 +51,51 @@ hw_manager = get_hardware_manager()
 
 # Sidebar Controls
 st.sidebar.header("🎛 System Controls & Config")
-selected_lang = st.sidebar.selectbox("Voice / Interface Language", ["English", "Hindi (हिंदी)", "Kannada (ಕನ್ನಡ)", "Tamil (தமிழ்)", "Telugu (తెలుగు)"])
-pump_override = st.sidebar.toggle("Manual Water Pump Override", value=False)
-moisture_threshold = st.sidebar.slider("Soil Moisture Alert Threshold (%)", 10, 80, 35)
+selected_lang = st.sidebar.selectbox("Voice / Interface Language", [
+    "English", "Hindi (हिंदी)", "Kannada (ಕನ್ನಡ)", "Tamil (தமிழ்)", "Telugu (తెలుగు)"
+])
 
-# Telemetry Source Mode
+# ── Moisture Thresholds with Hysteresis (Configurable) ──────────────────────────────
+st.sidebar.subheader("💧 Soil Moisture Pump Thresholds")
+c_th1, c_th2 = st.sidebar.columns(2)
+with c_th1:
+    lower_moist_th = st.number_input("Lower ON Threshold (%)", min_value=10.0, max_value=60.0, value=30.0, step=1.0,
+                                     help="If moisture drops BELOW this value, pump turns ON.")
+with c_th2:
+    upper_moist_th = st.number_input("Upper OFF Threshold (%)", min_value=15.0, max_value=90.0, value=45.0, step=1.0,
+                                     help="If moisture reaches or EXCEEDS this value, pump turns OFF.")
+
+if upper_moist_th <= lower_moist_th:
+    upper_moist_th = lower_moist_th + 5.0
+    st.sidebar.warning(f"Upper threshold auto-adjusted to {upper_moist_th}% for proper hysteresis gap.")
+
+# Sync thresholds with ESP32 firmware
+if "last_synced_thresholds" not in st.session_state or st.session_state.last_synced_thresholds != (lower_moist_th, upper_moist_th):
+    st.session_state.last_synced_thresholds = (lower_moist_th, upper_moist_th)
+    hw_manager.set_moisture_thresholds(lower_moist_th, upper_moist_th)
+
+# ── Water Pump Controls ─────────────────────────────────────────────────────────────
+st.sidebar.subheader("🌊 Water Pump Controls")
+pump_override = st.sidebar.toggle("Manual Water Pump Override", value=False,
+                                  help="Enables manual direct control. When off, pump is controlled automatically by soil moisture hysteresis.")
+
+if "last_pump_override" not in st.session_state or st.session_state.last_pump_override != pump_override:
+    st.session_state.last_pump_override = pump_override
+    if pump_override:
+        hw_manager.set_pump_manual_override(1)
+    else:
+        hw_manager.set_pump_auto_mode()
+
+# ── Telemetry Source Mode ───────────────────────────────────────────────────────────
 st.sidebar.subheader("📡 Telemetry Data Source")
 mode_choice = st.sidebar.radio(
     "Data Source Mode",
     ["Auto-Detect Hardware", "Manual Input", "Force Hardware Only"],
     index=0,
-    help="Auto-Detect will automatically take live readings if hardware is connected via USB or WiFi, and fallback to manual input if disconnected."
+    help="Auto-Detect keeps live hardware mode as long as ESP32 is connected via USB/WiFi, and falls back to manual only if genuinely disconnected."
 )
 
-# Manual Telemetry Input Controls (expanded if manual mode or when user wants to override)
+# Manual Telemetry Input Controls (available when manual mode is selected or fallback)
 with st.sidebar.expander("📝 Manual Sensor Input / Simulation", expanded=(mode_choice == "Manual Input")):
     temp_in = st.number_input("Ambient Temp (°C)", 10.0, 50.0, 26.5)
     hum_in  = st.number_input("Humidity (%)", 20.0, 100.0, 65.0)
@@ -74,7 +109,12 @@ with st.sidebar.expander("📝 Manual Sensor Input / Simulation", expanded=(mode
 manual_telemetry = {
     'temp': temp_in, 'hum': hum_in, 'moisture': moist_in,
     'N': n_in, 'P': p_in, 'K': k_in, 'ph': ph_in, 'ec': ec_in,
-    'pump': 1 if (moist_in < moisture_threshold or pump_override) else 0
+    'pump': 1 if (moist_in < lower_moist_th or pump_override) else 0,
+    'pump_mode': 'MANUAL' if pump_override else 'AUTO',
+    'lower_thresh': lower_moist_th,
+    'upper_thresh': upper_moist_th,
+    'npk_valid': True,
+    'npk_status': 'OK'
 }
 
 # Resolve active telemetry based on hardware connectivity and selected mode
@@ -82,39 +122,81 @@ telemetry, is_hardware_active, status_message = hw_manager.get_effective_telemet
     manual_telemetry, mode=mode_choice
 )
 
-# Apply manual pump override if active
+# Apply manual pump override in software representation if active
 if pump_override:
     telemetry['pump'] = 1
+    telemetry['pump_mode'] = 'MANUAL'
 
 # Hardware Status Badge in Sidebar
 if is_hardware_active:
-    st.sidebar.success(f"🟢 **{status_message}**")
+    if "NPK Sensor Not Responding" in status_message:
+        st.sidebar.warning(f"🟡 **{status_message}**")
+    else:
+        st.sidebar.success(f"🟢 **{status_message}**")
 else:
     st.sidebar.info(f"⚪ **{status_message}**")
 
 # Auto-refresh checkbox
-auto_refresh = st.sidebar.checkbox("🔄 Auto-refresh live data (every 3s)", value=is_hardware_active)
-
-# Log to database if manual (Hardware manager logs automatically when receiving live telemetry)
-if not is_hardware_active and mode_choice == "Manual Input":
-    db.log_telemetry(telemetry)
+auto_refresh = st.sidebar.checkbox("🔄 Auto-refresh live data (every 3s)", value=True)
 
 # Header Title & Live Status Banner
 st.title("🌾 Farm Bot: Intelligent Agriculture Dashboard")
 if is_hardware_active:
-    st.success(f"⚡ **Live Hardware Active:** {status_message} — Sensor readings are actively updating from your hardware!")
+    if "NPK Sensor Not Responding" in status_message:
+        st.warning(f"⚡ **Live Hardware Active:** {status_message}. Soil moisture and water pump relay are fully active. Please verify RS485 module wiring and 12V supply.")
+    else:
+        st.success(f"⚡ **Live Hardware Active:** {status_message} — Sensor readings and physical pump relay are synchronized!")
 else:
-    st.info(f"ℹ️ **Current Mode:** {status_message} — Connect your ESP32 via USB or WiFi to switch to live hardware streaming.")
+    st.info(f"ℹ️ **Current Mode:** {status_message} — Connect your ESP32 via USB Serial or WiFi to stream live sensor readings.")
 
 st.markdown("---")
 
+def safe_metric(val, unit="", default="--"):
+    if val is None:
+        return default
+    try:
+        fval = float(val)
+        return f"{fval:.1f} {unit}".strip()
+    except (ValueError, TypeError):
+        return default
+
 # Real-Time Telemetry Cards
 col1, col2, col3, col4, col5 = st.columns(5)
-col1.metric("Atmospheric Temp", f"{telemetry['temp']:.1f} °C", "Live Sensor" if is_hardware_active else "Manual")
-col2.metric("Relative Humidity", f"{telemetry['hum']:.1f} %", "Live Sensor" if is_hardware_active else "Manual")
-col3.metric("Soil Moisture", f"{telemetry['moisture']:.1f} %", delta="-ALERT Low" if telemetry['moisture'] < moisture_threshold else "Normal")
-col4.metric("Soil pH / EC", f"{telemetry['ph']:.2f} pH", f"{telemetry['ec']:.2f} mS/cm")
-col5.metric("Water Pump Relay", "ON 🌊" if telemetry['pump'] else "OFF 🛑")
+col1.metric("Atmospheric Temp", safe_metric(telemetry.get('temp'), "°C"), "Live Sensor" if is_hardware_active else "Manual")
+col2.metric("Relative Humidity", safe_metric(telemetry.get('hum'), "%"), "Live Sensor" if is_hardware_active else "Manual")
+
+# Moisture with delta showing relation to hysteresis thresholds
+raw_m = telemetry.get('moisture')
+if raw_m is not None:
+    try:
+        moist_val = float(raw_m)
+        if moist_val < lower_moist_th:
+            moist_delta = f"Low (<{lower_moist_th:.0f}%) -> Pump ON"
+        elif moist_val >= upper_moist_th:
+            moist_delta = f"Satisfied (>{upper_moist_th:.0f}%) -> Pump OFF"
+        else:
+            moist_delta = f"Hysteresis Zone ({lower_moist_th:.0f}%-{upper_moist_th:.0f}%)"
+    except Exception:
+        moist_val = 0.0
+        moist_delta = "Normal"
+else:
+    moist_val = 0.0
+    moist_delta = "Sensor Unavailable"
+
+col3.metric("Soil Moisture", safe_metric(raw_m, "%"), delta=moist_delta)
+
+# NPK Display (Real sensor readings or -- if unavailable)
+n_str = f"{telemetry['N']}" if telemetry.get('N') is not None else "--"
+p_str = f"{telemetry['P']}" if telemetry.get('P') is not None else "--"
+k_str = f"{telemetry['K']}" if telemetry.get('K') is not None else "--"
+npk_tag = "Live RS485 NPK" if (is_hardware_active and telemetry.get('npk_valid', False)) else ("No Sensor" if is_hardware_active else "Manual")
+col4.metric("Soil N - P - K (mg/kg)", f"{n_str} - {p_str} - {k_str}", npk_tag)
+
+# Pump status with mode
+pump_is_on = (telemetry.get('pump', 0) == 1)
+pump_mode_str = telemetry.get('pump_mode', 'AUTO')
+pump_label = "ON 🌊" if pump_is_on else "OFF 🛑"
+col5.metric("Water Pump Relay", pump_label, f"Mode: {pump_mode_str}")
 
 st.markdown("---")
 
@@ -130,12 +212,18 @@ with tab1:
     st.header("Smart Machine Learning Crop Recommendation")
     top_crops = ml_engine.predict_top_crops(telemetry, top_n=3)
 
+    # Automatically send the top predicted crops to the ESP32 so the 16x2 LCD displays them
+    if is_hardware_active:
+        crop_names = [c['crop'] for c in top_crops]
+        hw_manager.send_crop_recommendations(crop_names)
+
     c1, c2, c3 = st.columns(3)
     for i, crop_info in enumerate(top_crops):
         col = [c1, c2, c3][i]
         with col:
             st.subheader(f"Rank #{i+1}: {crop_info['crop']}")
-            st.progress(int(crop_info['suitability_score_pct']))
+            score_clamped = max(0, min(100, int(crop_info.get('suitability_score_pct', 0))))
+            st.progress(score_clamped)
             st.write(f"**Suitability Score:** {crop_info['suitability_score_pct']}%")
             st.write(f"**ML Model Confidence:** {crop_info['model_confidence_pct']}%")
             st.write(f"**Expected Yield:** {crop_info['estimated_yield_tons_per_acre']} Tons/Acre")
@@ -143,7 +231,10 @@ with tab1:
 
 with tab2:
     st.header("Target Crop Goal Mode & Soil Deficit Analyzer")
-    target_crop = st.selectbox("Select Target Crop to Cultivate", ["Paddy", "Wheat", "Maize", "Cotton", "Sugarcane", "Groundnut", "Tomato", "Onion", "Potato", "Chili", "Banana", "Millets"])
+    target_crop = st.selectbox("Select Target Crop to Cultivate", [
+        "Paddy", "Wheat", "Maize", "Cotton", "Sugarcane", "Groundnut",
+        "Tomato", "Onion", "Potato", "Chili", "Banana", "Millets"
+    ])
 
     if st.button("Analyze Soil Deficits for Selected Target Crop"):
         result = fert_engine.analyze_target_crop_goal(telemetry, target_crop)
@@ -279,4 +370,3 @@ with tab4:
 if auto_refresh:
     time.sleep(3)
     st.rerun()
-

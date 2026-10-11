@@ -43,14 +43,17 @@ python run.py
 
 ### Sensor Wiring
 
-| Sensor | ESP32 Pin | Notes |
-|---|---|---|
-| DHT22 DATA | GPIO 4 | 10kΩ pull-up to 3.3V |
-| Soil Moisture | GPIO 34 | Analog (ADC1) |
-| NPK/pH/EC RS485 RX | GPIO 16 | UART2 |
-| NPK/pH/EC RS485 TX | GPIO 17 | UART2 |
-| RS485 DE/RE | GPIO 5 | Direction control |
-| Pump Relay IN | GPIO 26 | HIGH = ON |
+| Sensor / Actuator | ESP32 Pin | Type | Notes |
+|---|---|---|---|
+| DHT22 (Temp & Humidity) | GPIO 4 | Digital I/O | 10kΩ pull-up to 3.3V |
+| Soil Moisture (Capacitive) | GPIO 34 | Analog In (ADC1) | 0% dry ~ 100% wet |
+| MAX485 RO (UART2 RX) | GPIO 16 | Hardware UART2 | Connect to MAX485 RO |
+| MAX485 DI (UART2 TX) | GPIO 17 | Hardware UART2 | Connect to MAX485 DI |
+| MAX485 DE / RE | GPIO 5 | Digital Out | Tie DE & RE together (HIGH=TX, LOW=RX) |
+| Water Pump Relay IN | GPIO 26 | Digital Out | Configurable Active HIGH / Active LOW |
+| LCD 16×2 I2C SDA | GPIO 21 | Hardware I2C | PCF8574 backpack (0x27 / 0x3F) |
+| LCD 16×2 I2C SCL | GPIO 22 | Hardware I2C | PCF8574 backpack (0x27 / 0x3F) |
+| Status Indicator LED | GPIO 2 | Digital Out | Onboard LED |
 
 ### Connection Methods
 

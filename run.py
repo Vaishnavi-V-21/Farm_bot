@@ -11,6 +11,12 @@ Usage         : python run.py
 import os
 import sys
 import subprocess
+import warnings
+
+# Suppress terminal warnings, pygame banners, and extraneous logs
+os.environ['PYGAME_HIDE_SUPPORT_PROMPT'] = "hide"
+os.environ['PYTHONWARNINGS'] = "ignore"
+warnings.filterwarnings('ignore')
 
 def check_and_install_dependencies():
     """Checks for required packages and installs any missing ones."""

@@ -11,7 +11,10 @@ Description   : Machine Learning inference engine for crop recommendation,
 import os
 import sys
 import pickle
+import warnings
+warnings.filterwarnings('ignore')
 import numpy as np
+import pandas as pd
 
 ROOT_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
 if ROOT_DIR not in sys.path:
@@ -43,19 +46,26 @@ class CropRecommendationEngine:
 
         p = self.crop_profiles[crop_name]
 
+        n_val = current_telemetry['N'] if current_telemetry.get('N') is not None else p['N']
+        p_val = current_telemetry['P'] if current_telemetry.get('P') is not None else p['P']
+        k_val = current_telemetry['K'] if current_telemetry.get('K') is not None else p['K']
+        t_val = current_telemetry.get('temp', 26.5)
+        h_val = current_telemetry.get('hum', 65.0)
+        ph_val = current_telemetry.get('ph', 6.5)
+
         # Calculate deviation penalties
-        n_penalty = abs(current_telemetry['N'] - p['N']) / float(p['N'])
-        p_penalty = abs(current_telemetry['P'] - p['P']) / float(p['P'])
-        k_penalty = abs(current_telemetry['K'] - p['K']) / float(p['K'])
+        n_penalty = abs(n_val - p['N']) / float(p['N'])
+        p_penalty = abs(p_val - p['P']) / float(p['P'])
+        k_penalty = abs(k_val - p['K']) / float(p['K'])
 
         temp_mid = (p['temp'][0] + p['temp'][1]) / 2.0
-        t_penalty = abs(current_telemetry['temp'] - temp_mid) / temp_mid
+        t_penalty = abs(t_val - temp_mid) / temp_mid
 
         hum_mid = (p['hum'][0] + p['hum'][1]) / 2.0
-        h_penalty = abs(current_telemetry['hum'] - hum_mid) / hum_mid
+        h_penalty = abs(h_val - hum_mid) / hum_mid
 
         ph_mid = (p['ph'][0] + p['ph'][1]) / 2.0
-        ph_penalty = abs(current_telemetry['ph'] - ph_mid) / ph_mid
+        ph_penalty = abs(ph_val - ph_mid) / ph_mid
 
         # Weighted aggregate penalty
         total_penalty = (0.25 * n_penalty + 0.20 * p_penalty + 0.20 * k_penalty +
@@ -71,14 +81,16 @@ class CropRecommendationEngine:
             return "General agronomic match based on historical yield data."
 
         reasons = []
-        if p['temp'][0] <= telemetry['temp'] <= p['temp'][1]:
+        t_val = telemetry.get('temp', 26.5)
+        ph_val = telemetry.get('ph', 6.5)
+        if p['temp'][0] <= t_val <= p['temp'][1]:
             reasons.append(f"Ideal ambient temperature range ({p['temp'][0]}-{p['temp'][1]}°C).")
-        if p['ph'][0] <= telemetry['ph'] <= p['ph'][1]:
+        if p['ph'][0] <= ph_val <= p['ph'][1]:
             reasons.append(f"Optimal soil pH balance ({p['ph'][0]}-{p['ph'][1]}).")
-        if abs(telemetry['N'] - p['N']) < 30:
-            reasons.append(f"Soil Nitrogen content matches nutrient intake profile.")
-        if abs(telemetry['K'] - p['K']) < 40:
-            reasons.append(f"Adequate Potassium reserve for root development.")
+        if telemetry.get('N') is not None and abs(telemetry['N'] - p['N']) < 30:
+            reasons.append("Soil Nitrogen content matches nutrient intake profile.")
+        if telemetry.get('K') is not None and abs(telemetry['K'] - p['K']) < 40:
+            reasons.append("Adequate Potassium reserve for root development.")
 
         if not reasons:
             reasons.append("Moderate match across environmental parameters.")
@@ -87,10 +99,17 @@ class CropRecommendationEngine:
 
     def predict_top_crops(self, telemetry, top_n=3):
         """Predicts top N crops with probability scores, suitability %, and yields."""
-        features = np.array([[
-            telemetry['N'], telemetry['P'], telemetry['K'],
-            telemetry['temp'], telemetry['hum'], telemetry['ph'], telemetry['moisture']
-        ]])
+        n_val = telemetry['N'] if telemetry.get('N') is not None else 50
+        p_val = telemetry['P'] if telemetry.get('P') is not None else 30
+        k_val = telemetry['K'] if telemetry.get('K') is not None else 120
+        t_val = telemetry.get('temp', 26.5)
+        h_val = telemetry.get('hum', 65.0)
+        ph_val = telemetry.get('ph', 6.5)
+        m_val = telemetry.get('moisture', 35.0)
+
+        features = pd.DataFrame([[
+            n_val, p_val, k_val, t_val, h_val, ph_val, m_val
+        ]], columns=['N', 'P', 'K', 'temp', 'hum', 'ph', 'moisture'])
 
         probs = self.model.predict_proba(features)[0]
         classes = self.model.classes_

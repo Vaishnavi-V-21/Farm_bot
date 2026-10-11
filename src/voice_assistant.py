@@ -11,8 +11,15 @@ Description   : Full Multilingual Voice Assistant with native sentence synthesis
 """
 
 import os
+import sys
 import time
 import re
+import warnings
+
+# Suppress pygame community prompt and warnings
+os.environ['PYGAME_HIDE_SUPPORT_PROMPT'] = "hide"
+warnings.filterwarnings('ignore')
+
 import speech_recognition as sr
 from gtts import gTTS
 import pygame

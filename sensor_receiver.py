@@ -28,57 +28,85 @@ except ModuleNotFoundError:
 app = Flask(__name__)
 db  = FarmBotDatabase()
 
-# Global moisture threshold (can be tuned here or synced from dashboard)
-MOISTURE_THRESHOLD = 35.0
+# Configurable hysteresis thresholds
+LOWER_MOISTURE_THRESHOLD = 30.0
+UPPER_MOISTURE_THRESHOLD = 45.0
+current_pump_state = 0
 
 # Stores the latest telemetry received from ESP32 (shared state)
 latest_telemetry = {}
+
+def _safe_val(v, default=None):
+    if v is None or v == "" or str(v).lower() in ["null", "none", "--", "-1"]:
+        return default
+    try:
+        return int(float(v))
+    except (ValueError, TypeError):
+        return default
 
 @app.route('/api/telemetry', methods=['POST'])
 def receive_telemetry():
     """
     Receives JSON payload from ESP32 and logs to database.
-    Returns pump ON/OFF command back to ESP32.
+    Returns pump ON/OFF command back to ESP32 with hysteresis.
     """
-    global latest_telemetry
+    global latest_telemetry, current_pump_state
 
     data = request.get_json(force=True)
     if not data:
         return jsonify({"error": "Invalid JSON"}), 400
 
-    # Extract sensor values with safe defaults
+    raw_n = _safe_val(data.get('N'))
+    raw_p = _safe_val(data.get('P'))
+    raw_k = _safe_val(data.get('K'))
+    moist = float(data.get('moisture', 35.0))
+
     telemetry = {
         'temp'    : float(data.get('temp',     26.0)),
         'hum'     : float(data.get('hum',      65.0)),
-        'moisture': float(data.get('moisture', 35.0)),
-        'N'       : int(data.get('N',   50)),
-        'P'       : int(data.get('P',   30)),
-        'K'       : int(data.get('K',  120)),
+        'moisture': moist,
+        'N'       : raw_n,
+        'P'       : raw_p,
+        'K'       : raw_k,
         'ph'      : float(data.get('ph',  6.5)),
         'ec'      : float(data.get('ec',  1.2)),
-        'pump'    : int(data.get('pump',    0)),
+        'pump'    : int(data.get('pump', current_pump_state)),
+        'npk_valid': bool(data.get('npk_valid', (raw_n is not None and raw_p is not None and raw_k is not None)))
     }
 
-    # Auto pump decision: turn ON if moisture below threshold
-    auto_pump = 1 if telemetry['moisture'] < MOISTURE_THRESHOLD else 0
-    telemetry['pump'] = auto_pump
+    # Auto pump hysteresis decision
+    if moist < LOWER_MOISTURE_THRESHOLD:
+        current_pump_state = 1
+    elif moist >= UPPER_MOISTURE_THRESHOLD:
+        current_pump_state = 0
+    # Between thresholds: maintain current_pump_state
+
+    telemetry['pump'] = current_pump_state
 
     # Save latest telemetry so dashboard can read it
     latest_telemetry = telemetry
 
     # Log to SQLite database
-    db.log_telemetry(telemetry)
+    db_record = dict(telemetry)
+    if db_record['N'] is None: db_record['N'] = -1
+    if db_record['P'] is None: db_record['P'] = -1
+    if db_record['K'] is None: db_record['K'] = -1
+    db.log_telemetry(db_record)
 
-    print(f"[ESP32 → SERVER] Temp:{telemetry['temp']}°C | "
-          f"Hum:{telemetry['hum']}% | Moisture:{telemetry['moisture']}% | "
-          f"N:{telemetry['N']} P:{telemetry['P']} K:{telemetry['K']} | "
-          f"pH:{telemetry['ph']} | EC:{telemetry['ec']} | Pump:{auto_pump}")
+    n_display = f"{telemetry['N']} mg/kg" if telemetry['N'] is not None else "--"
+    p_display = f"{telemetry['P']} mg/kg" if telemetry['P'] is not None else "--"
+    k_display = f"{telemetry['K']} mg/kg" if telemetry['K'] is not None else "--"
+
+    print(f"[ESP32 → SERVER] Temp:{telemetry['temp']}°C | Hum:{telemetry['hum']}% | "
+          f"Moisture:{telemetry['moisture']}% | N:{n_display} P:{p_display} K:{k_display} | "
+          f"Pump:{current_pump_state} (Hysteresis {LOWER_MOISTURE_THRESHOLD}-{UPPER_MOISTURE_THRESHOLD}%)")
 
     # Return pump command and status back to ESP32
     return jsonify({
         "status"       : "logged",
-        "pump_command" : auto_pump,
-        "threshold"    : MOISTURE_THRESHOLD
+        "pump_command" : current_pump_state,
+        "lower_thresh" : LOWER_MOISTURE_THRESHOLD,
+        "upper_thresh" : UPPER_MOISTURE_THRESHOLD
     }), 200
 
 

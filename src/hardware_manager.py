@@ -3,8 +3,8 @@
 Project Title : Farm Bot: Hardware & Sensor Manager
 File          : src/hardware_manager.py
 Description   : Auto-detects connected hardware (USB Serial COM port or WiFi IoT),
-                reads real-time sensor telemetry, and seamlessly falls back to 
-                manual input if hardware is disconnected.
+                reads real-time sensor telemetry, sends threshold/pump/crop commands,
+                and gracefully handles temporary sensor drops without forcing manual mode.
 =====================================================================================
 """
 
@@ -26,6 +26,25 @@ try:
     from src.db_manager import FarmBotDatabase
 except ModuleNotFoundError:
     from db_manager import FarmBotDatabase
+
+
+def _safe_float(val, default=0.0):
+    if val is None:
+        return default
+    try:
+        return float(val)
+    except (ValueError, TypeError):
+        return default
+
+
+def _safe_int_or_none(val):
+    if val is None or val == "" or str(val).strip() in ["--", "null", "None", "-1"]:
+        return None
+    try:
+        ival = int(float(val))
+        return ival if ival >= 0 else None
+    except (ValueError, TypeError):
+        return None
 
 
 class HardwareManager:
@@ -56,10 +75,11 @@ class HardwareManager:
         # Buffer for multi-line regex parsing (if ESP32 outputs multi-line text)
         self._partial_reading = {}
         
-        # Serial reader thread
+        # Serial reader thread & synchronization lock
         self._serial_thread = None
         self._serial_running = True
         self._active_serial = None
+        self._serial_io_lock = threading.Lock()
         
         # Start background scanner and listener thread
         if SERIAL_AVAILABLE:
@@ -96,15 +116,20 @@ class HardwareManager:
                         try:
                             ser = serial.Serial(target_port, self.baudrate, timeout=1.0)
                             time.sleep(1.0)  # Allow ESP32 to settle
-                            self._active_serial = ser
-                            self.port_name = target_port
-                            print(f"[HARDWARE]: Connected to USB Serial on {target_port} @ {self.baudrate} baud")
+                            with self._serial_io_lock:
+                                self._active_serial = ser
+                                self.port_name = target_port
+                                self.connection_type = f"USB Serial ({target_port})"
+                                self.is_connected = True
+                            print(f"[HARDWARE]: ✅ Connected to ESP32 on {target_port} @ {self.baudrate} baud")
                         except Exception as e:
-                            self._active_serial = None
+                            with self._serial_io_lock:
+                                self._active_serial = None
                             time.sleep(2.0)
                             continue
                     else:
                         # No serial hardware plugged in
+                        self.is_connected = False
                         time.sleep(2.0)
                         continue
 
@@ -119,34 +144,66 @@ class HardwareManager:
                                 if parsed:
                                     self._on_telemetry_received(parsed, f"USB Serial ({self.port_name})")
                     except serial.SerialException:
-                        print(f"[HARDWARE]: Lost connection to USB Serial on {self.port_name}")
-                        if self._active_serial:
-                            try:
-                                self._active_serial.close()
-                            except Exception:
-                                pass
-                        self._active_serial = None
-                        self.port_name = None
+                        print(f"[HARDWARE]: ❌ Lost connection to USB Serial on {self.port_name}")
+                        self._handle_disconnection()
                         time.sleep(2.0)
                     except Exception as e:
-                        time.sleep(0.5)
+                        time.sleep(0.2)
 
             except Exception as e:
                 time.sleep(2.0)
 
+    def _handle_disconnection(self):
+        """Safely cleans up state on genuine physical disconnection."""
+        with self._serial_io_lock:
+            if self._active_serial:
+                try:
+                    self._active_serial.close()
+                except Exception:
+                    pass
+            self._active_serial = None
+            self.port_name = None
+            self.connection_type = "None"
+            self.is_connected = False
+
+    def is_hardware_connected(self) -> bool:
+        """
+        Verifies actual ESP32 connection status without confusing
+        delayed readings with a disconnect.
+        """
+        # Check active USB serial port
+        if self._active_serial and self._active_serial.is_open:
+            if SERIAL_AVAILABLE and self.port_name:
+                available_ports = [p.device for p in serial.tools.list_ports.comports()]
+                if self.port_name in available_ports:
+                    self.is_connected = True
+                    return True
+                else:
+                    # Device was physically unplugged from USB
+                    self._handle_disconnection()
+                    return False
+            self.is_connected = True
+            return True
+
+        # Check recent WiFi telemetry (30s grace period)
+        if self.connection_type.startswith("WiFi") and (time.time() - self.last_received_time <= 30.0):
+            self.is_connected = True
+            return True
+
+        return False
+
     def parse_serial_line(self, line: str):
         """
-        Parses incoming serial line. Handles both JSON strings and 
-        formatted key-value text lines from the ESP32.
+        Parses incoming serial line from ESP32.
+        Correctly handles JSON with null/missing NPK values and regex formatted lines.
         """
         line = line.strip()
         if not line:
             return None
 
-        # 1. Try parsing direct JSON
+        # 1. Try parsing JSON substring
         if "{" in line and "}" in line:
             try:
-                # Extract JSON substring if wrapped in extra text
                 start = line.index("{")
                 end = line.rindex("}") + 1
                 json_str = line[start:end]
@@ -155,23 +212,39 @@ class HardwareManager:
                     data = data["telemetry"]
                 
                 # Check for standard fields
-                if any(k in data for k in ["temp", "humidity", "hum", "moisture"]):
+                if any(k in data for k in ["temp", "humidity", "hum", "moisture", "N", "pump"]):
+                    raw_n = data.get('N', data.get('nitrogen'))
+                    raw_p = data.get('P', data.get('phosphorus'))
+                    raw_k = data.get('K', data.get('potassium'))
+                    
+                    parsed_n = _safe_int_or_none(raw_n)
+                    parsed_p = _safe_int_or_none(raw_p)
+                    parsed_k = _safe_int_or_none(raw_k)
+                    
+                    npk_valid = bool(data.get('npk_valid', (parsed_n is not None and parsed_p is not None and parsed_k is not None)))
+                    npk_status = str(data.get('npk_status', 'OK' if npk_valid else 'UNAVAILABLE'))
+                    
                     telemetry = {
-                        'temp': float(data.get('temp', data.get('temperature', 26.5))),
-                        'hum': float(data.get('hum', data.get('humidity', 65.0))),
-                        'moisture': float(data.get('moisture', data.get('soil_moisture', 35.0))),
-                        'N': int(data.get('N', data.get('nitrogen', 50))),
-                        'P': int(data.get('P', data.get('phosphorus', 30))),
-                        'K': int(data.get('K', data.get('potassium', 120))),
-                        'ph': float(data.get('ph', data.get('soil_ph', 6.5))),
-                        'ec': float(data.get('ec', data.get('soil_ec', 1.2))),
-                        'pump': int(data.get('pump', data.get('pump_status', 0)))
+                        'temp': _safe_float(data.get('temp', data.get('temperature', 26.5)), 26.5),
+                        'hum': _safe_float(data.get('hum', data.get('humidity', 65.0)), 65.0),
+                        'moisture': _safe_float(data.get('moisture', data.get('soil_moisture', 35.0)), 35.0),
+                        'N': parsed_n,
+                        'P': parsed_p,
+                        'K': parsed_k,
+                        'ph': _safe_float(data.get('ph', data.get('soil_ph', 6.5)), 6.5),
+                        'ec': _safe_float(data.get('ec', data.get('soil_ec', 1.2)), 1.2),
+                        'pump': int(_safe_float(data.get('pump', data.get('pump_status', 0)))),
+                        'pump_mode': str(data.get('pump_mode', 'AUTO')),
+                        'lower_thresh': _safe_float(data.get('lower_thresh', 30.0), 30.0),
+                        'upper_thresh': _safe_float(data.get('upper_thresh', 45.0), 45.0),
+                        'npk_valid': npk_valid,
+                        'npk_status': npk_status
                     }
                     return telemetry
-            except Exception:
+            except Exception as e:
                 pass
 
-        # 2. Try parsing formatted lines (matching esp32_farm_bot.ino output)
+        # 2. Try parsing formatted human-readable lines from ESP32 Serial Monitor
         temp_match = re.search(r"Temperature\s*:\s*([0-9.]+)", line, re.IGNORECASE)
         if temp_match:
             self._partial_reading['temp'] = float(temp_match.group(1))
@@ -184,17 +257,20 @@ class HardwareManager:
         if moist_match:
             self._partial_reading['moisture'] = float(moist_match.group(1))
 
-        n_match = re.search(r"Nitrogen\s*\(?N\)?\s*:\s*([0-9]+)", line, re.IGNORECASE)
+        n_match = re.search(r"Nitrogen\s*\(?N\)?\s*:\s*([0-9]+|--)", line, re.IGNORECASE)
         if n_match:
-            self._partial_reading['N'] = int(n_match.group(1))
+            val = n_match.group(1)
+            self._partial_reading['N'] = None if val == "--" else int(val)
 
-        p_match = re.search(r"Phosphorus\s*\(?P\)?\s*:\s*([0-9]+)", line, re.IGNORECASE)
+        p_match = re.search(r"Phosphorus\s*\(?P\)?\s*:\s*([0-9]+|--)", line, re.IGNORECASE)
         if p_match:
-            self._partial_reading['P'] = int(p_match.group(1))
+            val = p_match.group(1)
+            self._partial_reading['P'] = None if val == "--" else int(val)
 
-        k_match = re.search(r"Potassium\s*\(?K\)?\s*:\s*([0-9]+)", line, re.IGNORECASE)
+        k_match = re.search(r"Potassium\s*\(?K\)?\s*:\s*([0-9]+|--)", line, re.IGNORECASE)
         if k_match:
-            self._partial_reading['K'] = int(k_match.group(1))
+            val = k_match.group(1)
+            self._partial_reading['K'] = None if val == "--" else int(val)
 
         ph_match = re.search(r"Soil pH\s*:\s*([0-9.]+)", line, re.IGNORECASE)
         if ph_match:
@@ -209,20 +285,29 @@ class HardwareManager:
             val = pump_match.group(1).upper()
             self._partial_reading['pump'] = 1 if val in ["ON", "1"] else 0
 
-        # If we have collected at least temperature, humidity, and moisture, produce complete record
+        # When we have collected at least temperature, humidity, and moisture
         if all(k in self._partial_reading for k in ['temp', 'hum', 'moisture']):
+            n_val = self._partial_reading.get('N', None)
+            p_val = self._partial_reading.get('P', None)
+            k_val = self._partial_reading.get('K', None)
+            npk_v = (n_val is not None and p_val is not None and k_val is not None)
+
             telemetry = {
                 'temp': self._partial_reading.get('temp', 26.5),
                 'hum': self._partial_reading.get('hum', 65.0),
                 'moisture': self._partial_reading.get('moisture', 35.0),
-                'N': self._partial_reading.get('N', 50),
-                'P': self._partial_reading.get('P', 30),
-                'K': self._partial_reading.get('K', 120),
+                'N': n_val,
+                'P': p_val,
+                'K': k_val,
                 'ph': self._partial_reading.get('ph', 6.5),
                 'ec': self._partial_reading.get('ec', 1.2),
-                'pump': self._partial_reading.get('pump', 0)
+                'pump': self._partial_reading.get('pump', 0),
+                'pump_mode': 'AUTO',
+                'lower_thresh': 30.0,
+                'upper_thresh': 45.0,
+                'npk_valid': npk_v,
+                'npk_status': 'OK' if npk_v else 'UNAVAILABLE'
             }
-            # Reset partial reading for next iteration
             self._partial_reading = {}
             return telemetry
 
@@ -235,75 +320,130 @@ class HardwareManager:
         self.connection_type = conn_type
         self.is_connected = True
         
-        # Log to database
+        # Log to database (fallback defaults for SQL if N/P/K is None)
         try:
-            self.db.log_telemetry(telemetry)
+            db_log_record = dict(telemetry)
+            if db_log_record.get('N') is None: db_log_record['N'] = -1
+            if db_log_record.get('P') is None: db_log_record['P'] = -1
+            if db_log_record.get('K') is None: db_log_record['K'] = -1
+            self.db.log_telemetry(db_log_record)
         except Exception:
             pass
 
-    def check_wifi_iot_telemetry(self, max_age_seconds=15):
+    def send_command(self, cmd_dict: dict) -> bool:
+        """Sends JSON command to ESP32 over active USB Serial connection."""
+        with self._serial_io_lock:
+            if self._active_serial and self._active_serial.is_open:
+                try:
+                    payload = json.dumps(cmd_dict) + "\n"
+                    self._active_serial.write(payload.encode('utf-8'))
+                    self._active_serial.flush()
+                    return True
+                except Exception as e:
+                    print(f"[HARDWARE]: Error writing command to serial: {e}")
+                    return False
+        return False
+
+    def set_moisture_thresholds(self, lower: float, upper: float) -> bool:
+        """Sends lower and upper moisture threshold updates to ESP32 firmware."""
+        return self.send_command({
+            "cmd": "set_thresholds",
+            "lower": round(float(lower), 1),
+            "upper": round(float(upper), 1)
+        })
+
+    def set_pump_manual_override(self, state: int) -> bool:
+        """Commands ESP32 to manually turn pump ON (1) or OFF (0)."""
+        return self.send_command({
+            "cmd": "set_pump",
+            "state": int(state)
+        })
+
+    def set_pump_auto_mode(self) -> bool:
+        """Commands ESP32 to restore automatic soil moisture hysteresis control."""
+        return self.send_command({
+            "cmd": "set_pump_mode",
+            "mode": "AUTO"
+        })
+
+    def send_crop_recommendations(self, crop_names: list) -> bool:
+        """Sends top recommended crop names to ESP32 for 16x2 LCD display."""
+        return self.send_command({
+            "cmd": "set_crops",
+            "crops": [str(c) for c in crop_names[:4]]
+        })
+
+    def check_wifi_iot_telemetry(self, max_age_seconds=20):
         """Checks if recent telemetry was received via WiFi (logged into SQLite database)."""
         try:
             rows = self.db.fetch_recent_telemetry(1)
             if rows:
                 row = rows[0]
-                # row: (timestamp, temperature, humidity, soil_moisture, nitrogen, phosphorus, potassium, soil_ec, soil_ph, pump_status)
-                # If USB is not connected, use the latest DB telemetry if recently logged
                 telemetry = {
                     'temp': float(row[1]),
                     'hum': float(row[2]),
                     'moisture': float(row[3]),
-                    'N': int(row[4]),
-                    'P': int(row[5]),
-                    'K': int(row[6]),
+                    'N': int(row[4]) if int(row[4]) >= 0 else None,
+                    'P': int(row[5]) if int(row[5]) >= 0 else None,
+                    'K': int(row[6]) if int(row[6]) >= 0 else None,
                     'ec': float(row[7]),
                     'ph': float(row[8]),
-                    'pump': int(row[9])
+                    'pump': int(row[9]),
+                    'npk_valid': int(row[4]) >= 0,
+                    'npk_status': 'OK' if int(row[4]) >= 0 else 'UNAVAILABLE',
+                    'pump_mode': 'AUTO',
+                    'lower_thresh': 30.0,
+                    'upper_thresh': 45.0
                 }
                 return telemetry
         except Exception:
             pass
         return None
 
-    def get_effective_telemetry(self, manual_inputs: dict, mode: str = "Auto"):
+    def get_effective_telemetry(self, manual_inputs: dict, mode: str = "Auto-Detect Hardware"):
         """
         Determines whether to use Live Hardware readings or Manual Inputs.
-
-        Args:
-            manual_inputs: dict of fallback values entered manually by user
-            mode: "Auto", "Hardware Only", or "Manual Simulation"
-
-        Returns:
-            telemetry: dict of final values to display/use
-            is_hardware_active: bool
-            status_text: descriptive connection status string
+        Adheres strictly to rules:
+        - Retains Hardware Mode as long as ESP32 connection is physically active.
+        - Never automatically switches to manual mode due to a temporary delay or timeout.
+        - Genuinely disconnected hardware displays 'Hardware Disconnected'.
+        - Automatic restoration when hardware reconnects.
         """
-        now = time.time()
-        hardware_fresh = (now - self.last_received_time) <= 15.0 if self.last_received_time > 0 else False
+        hardware_connected = self.is_hardware_connected()
 
-        # If USB is not currently feeding, check if WiFi IoT recently fed the database
-        if not hardware_fresh:
-            # Check receiver / database
-            wifi_data = self.check_wifi_iot_telemetry(max_age_seconds=15)
-            # Only use if this is a fresh external transmission and not just manual log
-            if self.connection_type.startswith("WiFi") and wifi_data:
-                self.latest_telemetry = wifi_data
-                hardware_fresh = True
-
-        if mode == "Manual Simulation":
+        # If user explicitly chooses Manual Input
+        if mode == "Manual Input":
             return manual_inputs, False, "Manual Input Mode (Simulation)"
 
-        if mode == "Hardware Only":
-            if hardware_fresh and self.latest_telemetry:
-                return self.latest_telemetry, True, f"Live Hardware ({self.connection_type})"
-            else:
-                return manual_inputs, False, "Hardware Offline / Waiting for Signal (Falling back to manual)"
+        # Check for WiFi telemetry fallback if USB is not connected
+        if not hardware_connected:
+            wifi_data = self.check_wifi_iot_telemetry(max_age_seconds=20)
+            if self.connection_type.startswith("WiFi") and wifi_data:
+                self.latest_telemetry = wifi_data
+                hardware_connected = True
 
-        # Auto Mode (Default)
-        if hardware_fresh and self.latest_telemetry:
-            return self.latest_telemetry, True, f"Live Hardware Connected ({self.connection_type})"
-        else:
-            return manual_inputs, False, "Hardware Disconnected (Using Manual Input)"
+        # Mode: Force Hardware Only
+        if mode == "Force Hardware Only":
+            if hardware_connected:
+                telemetry_to_use = self.latest_telemetry if self.latest_telemetry else manual_inputs
+                return telemetry_to_use, True, f"Live Hardware ({self.connection_type})"
+            else:
+                return manual_inputs, False, "Hardware Offline / Waiting for Signal"
+
+        # Mode: Auto-Detect Hardware (Default)
+        if hardware_connected:
+            if self.latest_telemetry:
+                # Add warnings to status string if specific sensors have issues
+                status_msg = f"Live Hardware Connected ({self.connection_type})"
+                if not self.latest_telemetry.get('npk_valid', False):
+                    status_msg += " — ⚠️ NPK Sensor Not Responding"
+                return self.latest_telemetry, True, status_msg
+            else:
+                # Connected to port, waiting for initial frame
+                return manual_inputs, True, f"Hardware Port Connected ({self.connection_type}) — Acquiring sensor frames..."
+
+        # Hardware genuinely disconnected
+        return manual_inputs, False, "Hardware Disconnected (Using Manual Input)"
 
 
 # Global shared instance
